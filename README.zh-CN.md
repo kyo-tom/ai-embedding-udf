@@ -1,17 +1,30 @@
-# AI Embedder - 文本嵌入库
+# AI Embedder & PDF Parser - AI 嵌入与解析库
 
 [English](README.md) | 简体中文
 
-一个灵活高效的文本嵌入库，支持多种 AI 提供商，具有智能批处理和模型管理功能。
+一个灵活高效的 AI 库，支持文本嵌入和 PDF 解析，具有多提供商支持、智能批处理和健壮的错误处理功能。
 
 ## 特性
 
+### 文本嵌入
 - **多提供商支持**：无缝切换 OpenAI、AIWorks 等兼容提供商
 - **智能批处理**：自动优化 API 调用，通过批量请求提高效率，同时遵守令牌限制
 - **模型注册表**：集中式模型配置管理，支持自定义维度和令牌限制
 - **分块支持**：通过智能分块和加权平均处理超大文本
+- **重试策略**：可配置的重试机制，支持指数退避
+- **错误处理**：多种错误处理策略（快速失败或零向量回退）
+
+### PDF 解析
+- **异步作业处理**：提交解析作业并轮询完成状态，支持可配置超时
+- **批量处理**：解析多个 PDF 文件，支持部分成功
+- **重试支持**：内置重试逻辑和指数退避，提高 API 可靠性
+- **错误处理**：可配置错误处理（快速失败或继续处理）
+- **MinIO 集成**：与 MinIO 对象存储直接集成
+
+### 共享功能
 - **类型安全**：完整的类型提示，提供更好的 IDE 支持和代码可靠性
 - **可扩展**：轻松添加新的提供商和模型
+- **安全日志**：自动 API 密钥脱敏的安全日志记录
 
 ## 安装
 
@@ -40,10 +53,10 @@ pip install -e ".[dev]"
 
 ## 快速开始
 
-### 使用 AIWorks 提供商
+### 使用 AIWorks 提供商进行文本嵌入
 
 ```python
-from ai.providers.aiworks_provider import AIWorksProvider
+from ai.providers import AIWorksProvider
 
 # 创建提供商
 provider = AIWorksProvider(
@@ -70,10 +83,50 @@ print(f"生成了 {len(embeddings)} 个嵌入向量")
 print(f"维度: {len(embeddings[0])}")
 ```
 
+### 使用 AIWorks 提供商进行 PDF 解析
+
+```python
+from ai.providers import AIWorksProvider
+from ai.protocols import RetryStrategy, ErrorHandlingStrategy
+
+# 创建提供商
+provider = AIWorksProvider(
+    name="AIWorks",
+    base_url="http://172.16.99.68:8011",
+    max_batch_tokens=100_000
+)
+
+# 获取 PDF 解析器描述符
+descriptor = provider.get_pdf_parser(
+    parser_type="mineru",
+    retry_strategy=RetryStrategy.EXPONENTIAL_BACKOFF_LIMITED,
+    max_retries=5,
+    error_handling=ErrorHandlingStrategy.FAIL_FAST
+)
+
+# 实例化解析器
+parser = descriptor.instantiate()
+
+# 解析文件
+files = [
+    "/uni-parse-documents/documents/report1.pdf",
+    "/uni-parse-documents/documents/report2.pdf",
+]
+
+result = parser.parse_files(
+    files=files,
+    source_parent_path="/uni-parse-documents/output"
+)
+
+print(f"成功: {result.success_count}, 失败: {result.failed_count}")
+for path in result.successful:
+    print(f"✓ {path}")
+```
+
 ### 使用 OpenAI 提供商
 
 ```python
-from ai.providers.openai_provider import OpenAIProvider
+from ai.providers import OpenAIProvider
 
 # 创建提供商
 provider = OpenAIProvider(
@@ -101,17 +154,23 @@ ai-embedder/
 │   ├── typing.py                # 类型定义
 │   ├── protocols/               # 协议实现
 │   │   ├── __init__.py
-│   │   └── text_embedder.py    # TextEmbedder 实现
+│   │   ├── text_embedder.py    # TextEmbedder 实现
+│   │   └── pdf_parser.py       # PDFParser 实现
 │   ├── providers/               # 提供商实现
 │   │   ├── __init__.py
 │   │   ├── base.py             # 基础提供商接口
 │   │   ├── aiworks_provider.py # AIWorks 提供商
 │   │   └── openai_provider.py  # OpenAI 提供商
 │   └── utils/                   # 工具函数
+│       ├── retry_utils.py       # 重试策略和工具
+│       ├── logging_utils.py     # 安全日志工具
 │       └── embedding_viz.py     # 可视化工具
 ├── tests/                       # 测试套件
 ├── examples/                    # 示例脚本
-│   └── test_embedding_aiworks.py
+│   ├── example_text_embedder.py
+│   └── example_pdf_parser.py
+├── doc/                         # 文档
+│   └── AI模块算子说明.md       # 中文详细文档
 ├── pyproject.toml              # 项目配置
 ├── README.md                   # 英文文档
 ├── README.zh-CN.md            # 中文文档（本文件）
@@ -210,20 +269,36 @@ mypy ai/
 
 ### 核心类
 
+#### 文本嵌入
 - `TextEmbedderDescriptor`：可序列化的嵌入器配置
 - `TextEmbedder`：主要的嵌入类，包含批处理逻辑
+
+#### PDF 解析
+- `PDFParserDescriptor`：可序列化的解析器配置
+- `PDFParser`：主要的 PDF 解析类，带异步作业处理
+- `BatchParseResult`：批量解析操作结果
+- `FileParseResult`：单个文件解析结果
+
+### 枚举
+
+- `RetryStrategy`：NO_RETRY, EXPONENTIAL_BACKOFF_LIMITED, EXPONENTIAL_BACKOFF_UNLIMITED
+- `ErrorHandlingStrategy`：FAIL_FAST, ZERO_VECTOR_FALLBACK
 
 ### 工具函数
 
 - `register_custom_model()`：注册新模型配置
 - `get_model_profile()`：获取模型配置
 - `chunk_text()`：将文本分割成块
+- `sanitize_dict()`：脱敏敏感数据用于日志记录
+- `calculate_delay()`：计算指数退避延迟
+- `should_retry()`：判断是否应该重试
 
 ## 示例
 
 查看 `examples/` 目录获取完整的工作示例：
 
-- `test_embedding_aiworks.py`：使用 AIWorks 提供商的完整示例
+- `example_text_embedder.py`：文本嵌入完整示例
+- `example_pdf_parser.py`：使用 AIWorks 提供商的 PDF 解析完整示例
 
 ## 系统要求
 

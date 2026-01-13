@@ -8,6 +8,7 @@
   - [OpenAIProvider](#openaiprovider)
   - [AIWorksProvider](#aiworksprovider)
 - [TextEmbedder 算子](#textembedder-算子)
+- [PDFParser 算子](#pdfparser-算子)
 - [重试策略](#重试策略)
 - [错误处理策略](#错误处理策略)
 - [模型配置](#模型配置)
@@ -21,7 +22,7 @@
 AI 模块提供了统一的 AI 能力接口,具有清晰的关注点分离:
 
 - **providers**: API 服务提供商 (OpenAI, Azure, 自定义端点)
-- **protocols**: AI 协议 (TextEmbedder 等)
+- **protocols**: AI 协议接口 (TextEmbedder, PDFParser 等)
 - **models**: 模型配置和配置文件
 - **typing**: 类型定义
 
@@ -160,16 +161,48 @@ embedder = descriptor.instantiate()
 
 - `conan-embedding-v1` (默认维度: 1792)
 
+#### 支持的解析器
+
+- `mineru` (PDF 文档解析器)
+
 #### 方法
 
 ##### get_text_embedder()
 
 参数与 `OpenAIProvider.get_text_embedder()` 相同。
 
+##### get_pdf_parser()
+
+创建 PDF 解析器描述符。
+
+**参数:**
+
+| 参数名 | 类型 | 默认值 | 说明 |
+|--------|------|--------|------|
+| `parser_type` | `Optional[str]` | `"mineru"` | 解析器类型 |
+| `document_type` | `str` | `"pdf"` | 文档类型 |
+| `parser_mode` | `str` | `"pipeline"` | 解析模式 |
+| `poll_interval` | `int` | `2` | 状态轮询间隔(秒) |
+| `poll_timeout` | `int` | `300` | 最大轮询超时时间(秒) |
+| `custom_options` | `Optional[Dict[str, Any]]` | `{}` | 自定义解析选项 |
+| `retry_strategy` | `Optional[RetryStrategy \| str]` | `"exponential_backoff_limited"` | 重试策略 |
+| `max_retries` | `Optional[int]` | `3` | 最大重试次数 |
+| `initial_delay` | `Optional[float]` | `1.0` | 初始延迟(秒) |
+| `max_delay` | `Optional[float]` | `60.0` | 最大延迟(秒) |
+| `exponential_base` | `Optional[float]` | `2.0` | 指数基数 |
+| `jitter` | `Optional[bool]` | `True` | 是否添加随机抖动 |
+
+**返回:** `PDFParserDescriptor`
+
+**异常:**
+- `ValueError`: 如果解析器类型不被此提供商支持
+
 #### 使用示例
 
+**文本嵌入:**
+
 ```python
-from ai.providers.aiworks_provider import AIWorksProvider
+from ai.providers import AIWorksProvider
 
 # 使用自定义 AIWorks 端点
 provider = AIWorksProvider(
@@ -183,6 +216,47 @@ descriptor = provider.get_text_embedder(
     model="conan-embedding-v1"
 )
 embedder = descriptor.instantiate()
+embeddings = embedder.embed_text(["测试文本"])
+```
+
+**PDF 解析:**
+
+```python
+from ai.providers import AIWorksProvider
+from ai.protocols import RetryStrategy
+
+# 创建提供商
+provider = AIWorksProvider(
+    name="AIWorks",
+    base_url="http://172.16.99.68:8011",
+    max_batch_tokens=100_000
+)
+
+# 获取 PDF 解析器描述符
+descriptor = provider.get_pdf_parser(
+    parser_type="mineru",
+    poll_timeout=600,  # 10 分钟超时
+    custom_options={
+        "language": "zh-CN",
+        "enable_ocr": True,
+    },
+    retry_strategy=RetryStrategy.EXPONENTIAL_BACKOFF_LIMITED,
+    max_retries=5
+)
+
+# 实例化解析器
+parser = descriptor.instantiate()
+
+# 解析文件
+result = parser.parse_files(
+    files=[
+        "/uni-parse-documents/documents/file1.pdf",
+        "/uni-parse-documents/documents/file2.pdf"
+    ],
+    source_parent_path="/uni-parse-documents/output"
+)
+
+print(f"成功: {result.success_count}, 失败: {result.failed_count}")
 ```
 
 ---
@@ -251,6 +325,177 @@ embeddings = embedder.embed_text(texts)
 
 **异常:**
 - `requests.RequestException`: 如果 API 调用失败且 error_handling 为 FAIL_FAST
+
+---
+
+## PDFParser 算子
+
+**描述:** PDF 文档解析器,支持异步任务轮询、重试机制和部分成功处理。
+
+### 设计架构
+
+PDFParser 遵循与 TextEmbedder 相同的三层架构:
+
+```
+1. Provider (存储 API 配置)
+   └─> AIWorksProvider.get_pdf_parser()
+
+2. Descriptor (可序列化配置)
+   └─> PDFParserDescriptor
+
+3. Parser (实际实例)
+   └─> descriptor.instantiate() → PDFParser
+```
+
+### 构造函数参数
+
+| 参数名 | 类型 | 默认值 | 必需 | 说明 |
+|--------|------|--------|------|------|
+| `base_url` | `str` | - | 是 | 解析服务的 API 基础 URL |
+| `document_type` | `str` | `"pdf"` | 否 | 文档类型 |
+| `parser_type` | `str` | `"mineru"` | 否 | 解析器后端 |
+| `parser_mode` | `str` | `"pipeline"` | 否 | 解析模式 |
+| `poll_interval` | `int` | `2` | 否 | 状态轮询间隔(秒) |
+| `poll_timeout` | `int` | `300` | 否 | 最大轮询超时时间(秒) |
+| `custom_options` | `Optional[Dict[str, Any]]` | `{}` | 否 | 自定义解析选项 |
+| `retry_strategy` | `RetryStrategy` | `EXPONENTIAL_BACKOFF_LIMITED` | 否 | 重试策略 |
+| `max_retries` | `int` | `3` | 否 | 最大重试次数 |
+| `initial_delay` | `float` | `1.0` | 否 | 初始延迟(秒) |
+| `max_delay` | `float` | `60.0` | 否 | 最大延迟(秒) |
+| `exponential_base` | `float` | `2.0` | 否 | 指数基数 |
+| `jitter` | `bool` | `True` | 否 | 是否添加随机抖动 |
+
+### 方法
+
+#### parse_file(source_path: str, output_path: str) -> str
+
+解析单个 PDF 文件。
+
+**参数:**
+- `source_path` (`str`): MinIO 上的源 PDF 文件路径(不含 s3:// 前缀)
+- `output_path` (`str`): 解析后的 Markdown 文件输出路径
+
+**返回:**
+- `str`: 解析后的 Markdown 文件路径
+
+**异常:**
+- `PDFParseError`: 如果解析失败
+
+**流程:**
+1. 提交解析任务到服务端
+2. 如果 30 秒内完成,直接返回结果
+3. 如果超时,获取 job_id 并开始轮询
+4. 轮询直到任务完成或超时
+
+**示例:**
+
+```python
+parser = descriptor.instantiate()
+
+output_path = parser.parse_file(
+    source_path="/uni-parse-documents/documents/report.pdf",
+    output_path="/uni-parse-documents/output/report.md"
+)
+
+print(f"解析完成: {output_path}")
+```
+
+#### parse_files(files: List[str], source_parent_path: str) -> BatchParseResult
+
+批量解析多个 PDF 文件,支持部分成功。
+
+**参数:**
+- `files` (`List[str]`): PDF 文件路径列表
+- `source_parent_path` (`str`): 输出 Markdown 文件的父目录
+
+**返回:**
+- `BatchParseResult`: 批量解析结果对象,包含:
+  - `successful` (`List[str]`): 成功解析的文件路径列表
+  - `failed` (`List[FileParseResult]`): 失败的文件结果列表
+  - `success_count` (`int`): 成功数量
+  - `failed_count` (`int`): 失败数量
+  - `total_count` (`int`): 总数量
+
+**特性:**
+- **部分成功支持**: 单个文件失败不会中断整个批次
+- **自动路径处理**: 自动将文件后缀改为 .md
+- **重试机制**: 每个文件独立重试
+
+**示例:**
+
+```python
+parser = descriptor.instantiate()
+
+result = parser.parse_files(
+    files=[
+        "/uni-parse-documents/documents/file1.pdf",
+        "/uni-parse-documents/documents/file2.pdf",
+        "/uni-parse-documents/documents/file3.pdf"
+    ],
+    source_parent_path="/uni-parse-documents/output"
+)
+
+print(f"成功: {result.success_count}/{result.total_count}")
+print(f"失败: {result.failed_count}/{result.total_count}")
+
+# 处理成功的文件
+for path in result.successful:
+    print(f"✓ {path}")
+
+# 处理失败的文件
+for failed in result.failed:
+    print(f"✗ {failed.source_path}: {failed.error_message}")
+```
+
+### 重试范围
+
+PDFParser 对以下 API 调用应用重试机制:
+
+1. **提交解析任务** (`POST /api/v1/parse_from_oss`)
+   - 网络错误
+   - 5xx 服务器错误
+   - 超时错误
+
+2. **轮询任务状态** (`GET /api/v1/jobs/{job_id}`)
+   - 网络错误
+   - 5xx 服务器错误
+   - 超时错误
+
+### 数据类型
+
+#### FileParseResult
+
+单个文件的解析结果。
+
+| 字段名 | 类型 | 说明 |
+|--------|------|------|
+| `source_path` | `str` | 源文件路径 |
+| `output_path` | `Optional[str]` | 输出文件路径(失败时为 None) |
+| `success` | `bool` | 是否成功 |
+| `error_message` | `Optional[str]` | 错误信息(成功时为 None) |
+| `job_id` | `Optional[str]` | 任务 ID |
+
+#### BatchParseResult
+
+批量解析结果。
+
+| 字段名 | 类型 | 说明 |
+|--------|------|------|
+| `successful` | `List[str]` | 成功解析的输出路径列表 |
+| `failed` | `List[FileParseResult]` | 失败的文件结果列表 |
+| `success_count` | `int` | 成功数量(属性) |
+| `failed_count` | `int` | 失败数量(属性) |
+| `total_count` | `int` | 总数量(属性) |
+
+### 使用建议
+
+| 场景 | 推荐配置 | 说明 |
+|------|---------|------|
+| **标准解析** | `poll_timeout=300`, `max_retries=3` | 适合大多数场景 |
+| **大文件解析** | `poll_timeout=600`, `max_retries=5` | 增加超时和重试次数 |
+| **快速失败** | `retry_strategy=NO_RETRY` | 网络稳定环境,快速发现问题 |
+| **关键文档** | `retry_strategy=UNLIMITED` | 确保解析成功 |
+| **批量处理** | 使用 `parse_files()` | 容忍部分失败,高效处理 |
 
 ---
 
@@ -735,6 +980,100 @@ except Exception as e:
     raise
 ```
 
+### 示例 9: PDF 文档解析(基础用法)
+
+```python
+from ai.providers import AIWorksProvider
+from ai.protocols import RetryStrategy
+
+# 创建提供商
+provider = AIWorksProvider(
+    name="AIWorks",
+    base_url="http://172.16.99.68:8011",
+    max_batch_tokens=100_000
+)
+
+# 获取 PDF 解析器描述符
+descriptor = provider.get_pdf_parser(
+    parser_type="mineru",
+    poll_timeout=600,  # 10 分钟超时
+    custom_options={
+        "language": "zh-CN",
+        "enable_ocr": True,
+    },
+    retry_strategy=RetryStrategy.EXPONENTIAL_BACKOFF_LIMITED,
+    max_retries=5
+)
+
+# 实例化解析器
+parser = descriptor.instantiate()
+
+# 解析单个文件
+output_path = parser.parse_file(
+    source_path="/uni-parse-documents/documents/report.pdf",
+    output_path="/uni-parse-documents/output/report.md"
+)
+
+print(f"解析完成: {output_path}")
+```
+
+### 示例 10: PDF 批量解析(部分成功处理)
+
+```python
+from ai.providers import AIWorksProvider
+from ai.protocols import RetryStrategy
+
+provider = AIWorksProvider(
+    name="AIWorks",
+    base_url="http://172.16.99.68:8011",
+    max_batch_tokens=100_000
+)
+
+descriptor = provider.get_pdf_parser(
+    parser_type="mineru",
+    poll_timeout=600,
+    custom_options={
+        "language": "zh-CN",
+        "enable_ocr": True,
+    },
+    retry_strategy=RetryStrategy.EXPONENTIAL_BACKOFF_LIMITED,
+    max_retries=3
+)
+
+parser = descriptor.instantiate()
+
+# 批量解析多个文件
+files = [
+    "/uni-parse-documents/documents/file1.pdf",
+    "/uni-parse-documents/documents/file2.pdf",
+    "/uni-parse-documents/documents/file3.pdf"
+]
+
+result = parser.parse_files(
+    files=files,
+    source_parent_path="/uni-parse-documents/output"
+)
+
+# 处理结果
+print(f"\n解析完成!")
+print(f"总数: {result.total_count}")
+print(f"成功: {result.success_count}")
+print(f"失败: {result.failed_count}")
+
+# 输出成功的文件
+if result.successful:
+    print("\n✓ 成功解析的文件:")
+    for path in result.successful:
+        print(f"  - {path}")
+
+# 输出失败的文件
+if result.failed:
+    print("\n✗ 解析失败的文件:")
+    for failed in result.failed:
+        print(f"  - {failed.source_path}")
+        print(f"    错误: {failed.error_message}")
+```
+
 ---
 
 ## 附录
@@ -814,6 +1153,28 @@ descriptor = provider.get_text_embedder(
 )
 ```
 
+#### Q6: PDF 解析任务超时怎么办?
+
+- 增加 `poll_timeout` 参数(默认 300 秒)
+- 对于大文件,建议设置 600 秒以上
+- 检查服务端解析性能
+
+#### Q7: 如何处理 PDF 批量解析中的部分失败?
+
+使用 `parse_files()` 方法会返回 `BatchParseResult`:
+
+```python
+result = parser.parse_files(files, output_dir)
+
+# 成功的文件
+for path in result.successful:
+    process_success(path)
+
+# 失败的文件
+for failed in result.failed:
+    log_error(failed.source_path, failed.error_message)
+```
+
 ### D. 错误码说明
 
 | 错误类型 | 可能原因 | 解决方案 |
@@ -822,15 +1183,4 @@ descriptor = provider.get_text_embedder(
 | `requests.RequestException` | API 调用失败 | 检查网络、API 密钥、URL |
 | `TypeError` | 参数类型错误 | 检查参数类型 |
 | `KeyError` | 响应格式错误 | 检查 API 兼容性 |
-
----
-
-## 版本信息
-
-- **版本**: 0.1.0
-- **更新日期**: 2026-01-08
-- **Python 版本要求**: >= 3.10
-
-## 许可证
-
-请参考项目根目录的 LICENSE 文件。
+| `PDFParseError` | PDF 解析失败 | 检查文件路径、服务状态、网络连接 |

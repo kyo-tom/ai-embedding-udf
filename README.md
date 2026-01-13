@@ -1,17 +1,30 @@
-# AI Embedder
+# AI Embedder & PDF Parser
 
 English | [简体中文](README.zh-CN.md)
 
-A flexible and efficient text embedding library supporting multiple AI providers with intelligent batching and model management.
+A flexible and efficient AI library supporting text embedding and PDF parsing with multiple providers, intelligent batching, and robust error handling.
 
 ## Features
 
-- Multi-Provider Support: Seamlessly switch between OpenAI, AIWorks, and other compatible providers
-- Intelligent Batching: Automatically optimizes API calls by batching requests while respecting token limits
-- Model Registry: Centralized model profile management with configurable dimensions and token limits
-- Chunking Support: Handles oversized texts through intelligent chunking and weighted averaging
-- Type-Safe: Full type hints for better IDE support and code reliability
-- Extensible: Easy to add new providers and models
+### Text Embedding
+- **Multi-Provider Support**: Seamlessly switch between OpenAI, AIWorks, and other compatible providers
+- **Intelligent Batching**: Automatically optimizes API calls by batching requests while respecting token limits
+- **Model Registry**: Centralized model profile management with configurable dimensions and token limits
+- **Chunking Support**: Handles oversized texts through intelligent chunking and weighted averaging
+- **Retry Strategies**: Configurable retry mechanisms with exponential backoff
+- **Error Handling**: Multiple error handling strategies (fail-fast or zero-vector fallback)
+
+### PDF Parsing
+- **Async Job Processing**: Submit parsing jobs and poll for completion with configurable timeouts
+- **Batch Processing**: Parse multiple PDF files with partial success support
+- **Retry Support**: Built-in retry logic with exponential backoff for API reliability
+- **Error Handling**: Configurable error handling (fail-fast or continue on error)
+- **MinIO Integration**: Direct integration with MinIO object storage
+
+### Shared Features
+- **Type-Safe**: Full type hints for better IDE support and code reliability
+- **Extensible**: Easy to add new providers and models
+- **Logging**: Secure logging with automatic API key sanitization
 
 ## Installation
 
@@ -40,10 +53,10 @@ pip install -e ".[dev]"
 
 ## Quick Start
 
-### Basic Usage with AIWorks Provider
+### Text Embedding with AIWorks Provider
 
 ```python
-from ai.providers.aiworks_provider import AIWorksProvider
+from ai.providers import AIWorksProvider
 
 # Create provider
 provider = AIWorksProvider(
@@ -60,9 +73,9 @@ embedder = descriptor.instantiate()
 
 # Embed texts
 texts = [
-    "人工智能正在改变世界",
-    "机器学习是人工智能的一个分支",
-    "深度学习使用神经网络",
+    "Artificial intelligence is changing the world",
+    "Machine learning is a branch of AI",
+    "Deep learning uses neural networks",
 ]
 
 embeddings = embedder.embed_text(texts)
@@ -70,10 +83,50 @@ print(f"Generated {len(embeddings)} embeddings")
 print(f"Dimension: {len(embeddings[0])}")
 ```
 
+### PDF Parsing with AIWorks Provider
+
+```python
+from ai.providers import AIWorksProvider
+from ai.protocols import RetryStrategy, ErrorHandlingStrategy
+
+# Create provider
+provider = AIWorksProvider(
+    name="AIWorks",
+    base_url="http://172.16.99.68:8011",
+    max_batch_tokens=100_000
+)
+
+# Get PDF parser descriptor
+descriptor = provider.get_pdf_parser(
+    parser_type="mineru",
+    retry_strategy=RetryStrategy.EXPONENTIAL_BACKOFF_LIMITED,
+    max_retries=5,
+    error_handling=ErrorHandlingStrategy.FAIL_FAST
+)
+
+# Instantiate parser
+parser = descriptor.instantiate()
+
+# Parse files
+files = [
+    "/uni-parse-documents/documents/report1.pdf",
+    "/uni-parse-documents/documents/report2.pdf",
+]
+
+result = parser.parse_files(
+    files=files,
+    source_parent_path="/uni-parse-documents/output"
+)
+
+print(f"Success: {result.success_count}, Failed: {result.failed_count}")
+for path in result.successful:
+    print(f"✓ {path}")
+```
+
 ### Using OpenAI Provider
 
 ```python
-from ai.providers.openai_provider import OpenAIProvider
+from ai.providers import OpenAIProvider
 
 # Create provider
 provider = OpenAIProvider(
@@ -101,17 +154,23 @@ ai-embedder/
 │   ├── typing.py                # Type definitions
 │   ├── protocols/               # Protocol implementations
 │   │   ├── __init__.py
-│   │   └── text_embedder.py    # TextEmbedder implementation
+│   │   ├── text_embedder.py    # TextEmbedder implementation
+│   │   └── pdf_parser.py       # PDFParser implementation
 │   ├── providers/               # Provider implementations
 │   │   ├── __init__.py
 │   │   ├── base.py             # Base provider interface
 │   │   ├── aiworks_provider.py # AIWorks provider
 │   │   └── openai_provider.py  # OpenAI provider
 │   └── utils/                   # Utility functions
+│       ├── retry_utils.py       # Retry strategies and utilities
+│       ├── logging_utils.py     # Secure logging utilities
 │       └── embedding_viz.py     # Visualization tools
 ├── tests/                       # Test suite
 ├── examples/                    # Example scripts
-│   └── test_embedding_aiworks.py
+│   ├── example_text_embedder.py
+│   └── example_pdf_parser.py
+├── doc/                         # Documentation
+│   └── AI模块算子说明.md       # Chinese documentation
 ├── pyproject.toml              # Project configuration
 ├── README.md                   # English documentation (this file)
 ├── README.zh-CN.md            # Chinese documentation
@@ -210,20 +269,36 @@ mypy ai/
 
 ### Core Classes
 
+#### Text Embedding
 - `TextEmbedderDescriptor`: Serializable embedder configuration
 - `TextEmbedder`: Main embedding class with batching logic
+
+#### PDF Parsing
+- `PDFParserDescriptor`: Serializable parser configuration
+- `PDFParser`: Main PDF parsing class with async job handling
+- `BatchParseResult`: Result of batch parsing operation
+- `FileParseResult`: Result of single file parsing
+
+### Enums
+
+- `RetryStrategy`: NO_RETRY, EXPONENTIAL_BACKOFF_LIMITED, EXPONENTIAL_BACKOFF_UNLIMITED
+- `ErrorHandlingStrategy`: FAIL_FAST, ZERO_VECTOR_FALLBACK
 
 ### Utility Functions
 
 - `register_custom_model()`: Register new model profiles
 - `get_model_profile()`: Retrieve model configurations
 - `chunk_text()`: Split text into chunks
+- `sanitize_dict()`: Sanitize sensitive data for logging
+- `calculate_delay()`: Calculate exponential backoff delay
+- `should_retry()`: Determine if retry should be attempted
 
 ## Examples
 
 See the `examples/` directory for complete working examples:
 
-- `test_embedding_aiworks.py`: Complete example using AIWorks provider
+- `example_text_embedder.py`: Complete example using text embedding
+- `example_pdf_parser.py`: Complete example using PDF parsing with AIWorks provider
 
 ## Requirements
 

@@ -16,21 +16,9 @@ import numpy as np
 
 from ..typing import OpenAIProviderOptions, Embedding, EmbeddingDimensions, Options
 from ..models import get_model_profile
+from ..utils import calculate_delay, should_retry, RetryStrategy, ErrorHandlingStrategy
 
 logger = logging.getLogger(__name__)
-
-
-class RetryStrategy(Enum):
-    """重试策略"""
-    NO_RETRY = "no_retry"  # 不重试
-    EXPONENTIAL_BACKOFF_LIMITED = "exponential_backoff_limited"  # 指数退避 + 指定次数
-    EXPONENTIAL_BACKOFF_UNLIMITED = "exponential_backoff_unlimited"  # 指数退避 + 无限重试
-
-
-class ErrorHandlingStrategy(Enum):
-    """错误处理策略"""
-    FAIL_FAST = "fail_fast"  # 直接报错结束
-    ZERO_VECTOR_FALLBACK = "zero_vector_fallback"  # 零向量回退
 
 
 def parse_retry_strategy(value: Optional[str | RetryStrategy]) -> RetryStrategy:
@@ -118,11 +106,11 @@ class TextEmbedderDescriptor:
 
     # Retry and error handling configuration
     retry_strategy: RetryStrategy = RetryStrategy.EXPONENTIAL_BACKOFF_LIMITED
-    max_retries: int = 3  # 最大重试次数（仅用于 LIMITED 策略）
-    initial_delay: float = 1.0  # 初始延迟（秒）
-    max_delay: float = 60.0  # 最大延迟（秒）
-    exponential_base: float = 2.0  # 指数基数
-    jitter: bool = True  # 是否添加随机抖动
+    max_retries: int = 3  # Maximum retry attempts (for LIMITED strategy only)
+    initial_delay: float = 1.0  # Initial delay in seconds
+    max_delay: float = 60.0  # Maximum delay in seconds
+    exponential_base: float = 2.0  # Exponential base for backoff calculation
+    jitter: bool = True  # Whether to add random jitter to delays
     error_handling: ErrorHandlingStrategy = ErrorHandlingStrategy.FAIL_FAST
 
     def __post_init__(self) -> None:
@@ -253,50 +241,6 @@ class TextEmbedder:
             f"retry_strategy={retry_strategy.value}, "
             f"error_handling={error_handling.value}"
         )
-
-    def _calculate_delay(self, attempt: int) -> float:
-        """
-        Calculate delay for exponential backoff.
-
-        Args:
-            attempt: Current retry attempt (0-indexed)
-
-        Returns:
-            Delay in seconds
-        """
-        delay = min(
-            self.initial_delay * (self.exponential_base ** attempt),
-            self.max_delay
-        )
-
-        if self.jitter:
-            # Add random jitter (±25%)
-            jitter_range = delay * 0.25
-            delay = delay + random.uniform(-jitter_range, jitter_range)
-
-        return max(0, delay)
-
-    def _should_retry(self, attempt: int, exception: Exception) -> bool:
-        """
-        Determine if we should retry based on the retry strategy.
-
-        Args:
-            attempt: Current retry attempt (0-indexed)
-            exception: The exception that occurred
-
-        Returns:
-            True if we should retry, False otherwise
-        """
-        if self.retry_strategy == RetryStrategy.NO_RETRY:
-            return False
-
-        if self.retry_strategy == RetryStrategy.EXPONENTIAL_BACKOFF_LIMITED:
-            return attempt < self.max_retries
-
-        if self.retry_strategy == RetryStrategy.EXPONENTIAL_BACKOFF_UNLIMITED:
-            return True
-
-        return False
 
     def embed_text(self, texts: List[str]) -> List[Embedding]:
         """
@@ -440,8 +384,14 @@ class TextEmbedder:
                 logger.error(f"API call failed (attempt {attempt + 1}): {e}")
 
                 # Check if we should retry
-                if self._should_retry(attempt, e):
-                    delay = self._calculate_delay(attempt)
+                if should_retry(attempt, e, self.retry_strategy, self.max_retries):
+                    delay = calculate_delay(
+                        attempt,
+                        self.initial_delay,
+                        self.max_delay,
+                        self.exponential_base,
+                        self.jitter
+                    )
                     logger.info(f"Retrying in {delay:.2f} seconds...")
                     time.sleep(delay)
                     attempt += 1
